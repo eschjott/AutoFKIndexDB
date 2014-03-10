@@ -1,5 +1,9 @@
 package com.levelsbeyond.postgres;
 
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.net.URISyntaxException;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
@@ -7,9 +11,15 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Map.Entry;
+import java.util.Properties;
 
 import org.apache.commons.lang3.BooleanUtils;
+import org.apache.commons.lang3.tuple.ImmutablePair;
+import org.apache.commons.lang3.tuple.Pair;
 import org.jdom.output.Format;
 import org.jdom.output.XMLOutputter;
 
@@ -34,11 +44,13 @@ public class AutoFKIndexDB {
 
 	private static final String indexQuery = "SELECT indexname FROM pg_indexes WHERE schemaname = 'public' AND indexdef like 'CREATE INDEX%'";
 
-	public static void main(String[] args) throws SQLException {
+	private static final Map<String, Pair<String, String>> indexMap = new HashMap<String, Pair<String, String>>();
+
+	public static void main(String[] args) throws SQLException, IOException {
 		String host = "localhost";
-		String database = "ABC-Workflow";
-		String user = "abcworkflow";
-		String password = "FordBo$$302";
+		String database = null;
+		String user = null;
+		String password = null;
 		int minTuples = 1000;
 		Boolean dropIndices = null;
 		Boolean createIndices = null;
@@ -68,7 +80,23 @@ public class AutoFKIndexDB {
 			}
 		}
 
-		if (showHelp || (dropIndices == null && createIndices == null)) {
+		Properties props = new Properties();
+		props.load(ClassLoader.getSystemResourceAsStream("default.index.properties"));
+		try {
+			props.load(new FileInputStream(getJarPath() + File.separator + "index.properties"));
+		}
+		catch (Exception e) {
+			System.err.println("Couldn't locate index.properties -- ignoring.");
+		}
+		for (Entry<Object, Object> prop : props.entrySet()) {
+			String indexName = prop.getKey().toString();
+			String[] tableAndColumn = prop.getValue().toString().split("\\.");
+			if (tableAndColumn.length == 2) {
+				indexMap.put(indexName, new ImmutablePair<String, String>(tableAndColumn[0], tableAndColumn[1]));
+			}
+		}
+
+		if (showHelp || database == null || user == null || password == null || (dropIndices == null && createIndices == null)) {
 			System.out.println("Usage: java -jar AutoFKIndexDB.jar\nOptions:\n" +
 					"\t--host=[" + host + "]\n" +
 					"\t--database=[" + database + "]\n" +
@@ -97,6 +125,21 @@ public class AutoFKIndexDB {
 				conn.close();
 			}
 		}
+	}
+
+	private static String jarPath;
+
+	private static String getJarPath() {
+		if (jarPath == null) {
+			try {
+				File jarFile = new File(AutoFKIndexDB.class.getProtectionDomain().getCodeSource().getLocation().toURI());
+				jarPath = jarFile.getParentFile().getAbsolutePath();
+			}
+			catch (URISyntaxException e) {
+				e.printStackTrace();
+			}
+		}
+		return jarPath;
 	}
 
 	private void creasteFKIndices(Connection conn, int minTuples, boolean dropIndices, boolean createIndices) throws SQLException {
@@ -132,10 +175,28 @@ public class AutoFKIndexDB {
 					indexName = indexName.substring(0, indexName.lastIndexOf("_fkey"));
 				}
 				if (fk.getTuples() >= minTuples && !hasIndex(conn, indexName)) {
-					System.out.printf("Tuples %10d: %s\n", fk.getTuples(), (fk.getTableName() + "." + fk.getColumnName() + " --> " + indexName));
+					System.out.printf("Creating index %s (tuples: %d)\n", (fk.getTableName() + "." + fk.getColumnName() + " --> " + indexName), fk.getTuples());
 
 					PreparedStatement createStmt = conn.prepareStatement(String.format(createIndex, indexName, fk.getTableName(), fk.getColumnName()));
 					createStmt.execute();
+				}
+			}
+
+			for (Entry<String, Pair<String, String>> entry : indexMap.entrySet()) {
+				String indexName = entry.getKey();
+				String tableName = entry.getValue().getLeft();
+				String columnName = entry.getValue().getRight();
+
+				if (!hasIndex(conn, indexName)) {
+					System.out.printf("Creating index %s\n", (tableName + "." + columnName + " --> " + indexName));
+
+					try {
+						PreparedStatement createStmt = conn.prepareStatement(String.format(createIndex, indexName, tableName, columnName));
+						createStmt.execute();
+					}
+					catch (SQLException e) {
+						System.err.println("Failed to create index " + indexName + ": " + e.getMessage());
+					}
 				}
 			}
 		}

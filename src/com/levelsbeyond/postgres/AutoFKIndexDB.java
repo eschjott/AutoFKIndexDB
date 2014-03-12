@@ -69,6 +69,9 @@ public class AutoFKIndexDB {
 			else if (arg.startsWith("--password=")) {
 				password = arg.substring(11);
 			}
+			else if (arg.startsWith("--min-tuples=")) {
+				minTuples = Integer.valueOf(arg.substring(13));
+			}
 			else if (arg.startsWith("--drop-indices=")) {
 				dropIndices = BooleanUtils.toBooleanObject(arg.substring(15));
 			}
@@ -102,7 +105,7 @@ public class AutoFKIndexDB {
 					"\t--database=[" + database + "]\n" +
 					"\t--user=[" + user + "]\n" +
 					"\t--password=[" + password + "]\n" +
-					"\t--min_tuples=[" + minTuples + "]\n" +
+					"\t--min-tuples=[" + minTuples + "]\n" +
 					"\t--drop-indices=" + (dropIndices != null ? "[" + dropIndices + "]" : "true|false") + "\n" +
 					"\t--create-indices=" + (createIndices != null ? "[" + createIndices + "]" : "true|false") + "\n" +
 					"\t--help");

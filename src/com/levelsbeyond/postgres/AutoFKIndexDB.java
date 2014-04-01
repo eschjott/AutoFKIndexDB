@@ -53,6 +53,7 @@ public class AutoFKIndexDB {
 		String password = null;
 		int minTuples = 1000;
 		Boolean dropIndices = null;
+		Boolean dropConstraints = null;
 		Boolean createIndices = null;
 		boolean showHelp = false;
 
@@ -74,6 +75,9 @@ public class AutoFKIndexDB {
 			}
 			else if (arg.startsWith("--drop-indices=")) {
 				dropIndices = BooleanUtils.toBooleanObject(arg.substring(15));
+			}
+			else if (arg.startsWith("--drop-constraints=")) {
+				dropConstraints = BooleanUtils.toBooleanObject(arg.substring(19));
 			}
 			else if (arg.startsWith("--create-indices=")) {
 				createIndices = BooleanUtils.toBooleanObject(arg.substring(17));
@@ -99,7 +103,7 @@ public class AutoFKIndexDB {
 			}
 		}
 
-		if (showHelp || database == null || user == null || password == null || (dropIndices == null && createIndices == null)) {
+		if (showHelp || database == null || user == null || password == null || (dropIndices == null && dropConstraints == null && createIndices == null)) {
 			System.out.println("Usage: java -jar AutoFKIndexDB.jar\nOptions:\n" +
 					"\t--host=[" + host + "]\n" +
 					"\t--database=[" + database + "]\n" +
@@ -107,6 +111,7 @@ public class AutoFKIndexDB {
 					"\t--password=[" + password + "]\n" +
 					"\t--min-tuples=[" + minTuples + "]\n" +
 					"\t--drop-indices=" + (dropIndices != null ? "[" + dropIndices + "]" : "true|false") + "\n" +
+					"\t--drop-constraints=" + (dropConstraints != null ? "[" + dropConstraints + "]" : "true|false") + "\n" +
 					"\t--create-indices=" + (createIndices != null ? "[" + createIndices + "]" : "true|false") + "\n" +
 					"\t--help");
 			System.exit(1);
@@ -117,7 +122,19 @@ public class AutoFKIndexDB {
 			String url = "jdbc:postgresql://" + host + ":5432/" + database;
 			conn = DriverManager.getConnection(url, user, password);
 
-			new AutoFKIndexDB().creasteFKIndices(conn, minTuples, BooleanUtils.toBoolean(dropIndices), BooleanUtils.toBoolean(createIndices));
+			AutoFKIndexDB autoFK = new AutoFKIndexDB();
+
+			if (BooleanUtils.isTrue(dropIndices)) {
+				autoFK.dropForeignKeyIndices(conn);
+			}
+
+			if (BooleanUtils.isTrue(dropConstraints)) {
+				autoFK.dropForeignKeyConstraints(conn);
+			}
+
+			if (BooleanUtils.isTrue(createIndices)) {
+				autoFK.createForeignKeyIndices(conn, minTuples);
+			}
 		}
 		catch (Exception e) {
 			System.err.println("Got an exception: " + e.getMessage());
@@ -145,63 +162,77 @@ public class AutoFKIndexDB {
 		return jarPath;
 	}
 
-	private void creasteFKIndices(Connection conn, int minTuples, boolean dropIndices, boolean createIndices) throws SQLException {
-		if (dropIndices) {
-			deleteForeignKeyIndices(conn);
+	private void createForeignKeyIndices(Connection conn, int minTuples) throws SQLException {
+		List<ForeignKeyConstraint> fkConstraints = new ArrayList<ForeignKeyConstraint>();
+		PreparedStatement selectStmt = conn.prepareStatement(constraintQuery);
+		ResultSet rs = selectStmt.executeQuery();
+		while (rs.next()) {
+			String tableName = rs.getString(1);
+			String columnName = rs.getString(2);
+			String constraintName = rs.getString(3);
+			fkConstraints.add(new ForeignKeyConstraint(tableName, columnName, constraintName));
 		}
 
-		if (createIndices) {
-			List<ForeignKeyConstraint> fkConstraints = new ArrayList<ForeignKeyConstraint>();
-			PreparedStatement selectStmt = conn.prepareStatement(constraintQuery);
-			ResultSet rs = selectStmt.executeQuery();
-			while (rs.next()) {
-				String tableName = rs.getString(1);
-				String columnName = rs.getString(2);
-				String constraintName = rs.getString(3);
-				fkConstraints.add(new ForeignKeyConstraint(tableName, columnName, constraintName));
+		for (ForeignKeyConstraint fk : fkConstraints) {
+			selectStmt = conn.prepareStatement(tuplesQuery);
+			selectStmt.setString(1, fk.getConstraintName());
+			rs = selectStmt.executeQuery();
+			if (rs.next()) {
+				fk.setTuples(rs.getLong(1));
 			}
+		}
 
-			for (ForeignKeyConstraint fk : fkConstraints) {
-				selectStmt = conn.prepareStatement(tuplesQuery);
-				selectStmt.setString(1, fk.getConstraintName());
-				rs = selectStmt.executeQuery();
-				if (rs.next()) {
-					fk.setTuples(rs.getLong(1));
-				}
+		Collections.sort(fkConstraints);
+
+		for (ForeignKeyConstraint fk : fkConstraints) {
+			String indexName = "fki_" + fk.getConstraintName();
+			if (indexName.lastIndexOf("_fkey") > 0) {
+				indexName = indexName.substring(0, indexName.lastIndexOf("_fkey"));
 			}
+			if (fk.getTuples() >= minTuples && !hasIndex(conn, indexName)) {
+				System.out.printf("Creating index %s (tuples: %d)\n", (fk.getTableName() + "." + fk.getColumnName() + " --> " + indexName), fk.getTuples());
 
-			Collections.sort(fkConstraints);
+				PreparedStatement createStmt = conn.prepareStatement(String.format(createIndex, indexName, fk.getTableName(), fk.getColumnName()));
+				createStmt.execute();
+			}
+		}
 
-			for (ForeignKeyConstraint fk : fkConstraints) {
-				String indexName = "fki_" + fk.getConstraintName();
-				if (indexName.lastIndexOf("_fkey") > 0) {
-					indexName = indexName.substring(0, indexName.lastIndexOf("_fkey"));
-				}
-				if (fk.getTuples() >= minTuples && !hasIndex(conn, indexName)) {
-					System.out.printf("Creating index %s (tuples: %d)\n", (fk.getTableName() + "." + fk.getColumnName() + " --> " + indexName), fk.getTuples());
+		for (Entry<String, Pair<String, String>> entry : indexMap.entrySet()) {
+			String indexName = entry.getKey();
+			String tableName = entry.getValue().getLeft();
+			String columnName = entry.getValue().getRight();
 
-					PreparedStatement createStmt = conn.prepareStatement(String.format(createIndex, indexName, fk.getTableName(), fk.getColumnName()));
+			if (!hasIndex(conn, indexName)) {
+				System.out.printf("Creating index %s\n", (tableName + "." + columnName + " --> " + indexName));
+
+				try {
+					PreparedStatement createStmt = conn.prepareStatement(String.format(createIndex, indexName, tableName, columnName));
 					createStmt.execute();
 				}
-			}
-
-			for (Entry<String, Pair<String, String>> entry : indexMap.entrySet()) {
-				String indexName = entry.getKey();
-				String tableName = entry.getValue().getLeft();
-				String columnName = entry.getValue().getRight();
-
-				if (!hasIndex(conn, indexName)) {
-					System.out.printf("Creating index %s\n", (tableName + "." + columnName + " --> " + indexName));
-
-					try {
-						PreparedStatement createStmt = conn.prepareStatement(String.format(createIndex, indexName, tableName, columnName));
-						createStmt.execute();
-					}
-					catch (SQLException e) {
-						System.err.println("Failed to create index " + indexName + ": " + e.getMessage());
-					}
+				catch (SQLException e) {
+					System.err.println("Failed to create index " + indexName + ": " + e.getMessage());
 				}
 			}
+		}
+	}
+
+	private void dropForeignKeyConstraints(Connection conn) throws SQLException {
+		List<ForeignKeyConstraint> fkConstraints = new ArrayList<ForeignKeyConstraint>();
+		PreparedStatement selectStmt = conn.prepareStatement(constraintQuery);
+		ResultSet rs = selectStmt.executeQuery();
+		while (rs.next()) {
+			String tableName = rs.getString(1);
+			String columnName = rs.getString(2);
+			String constraintName = rs.getString(3);
+			fkConstraints.add(new ForeignKeyConstraint(tableName, columnName, constraintName));
+		}
+
+		Collections.sort(fkConstraints);
+
+		for (ForeignKeyConstraint fk : fkConstraints) {
+			PreparedStatement alterStmt = conn.prepareStatement("ALTER TABLE " + fk.tableName + " DROP CONSTRAINT " + fk.constraintName);
+			System.out.println("Dropping constraint " + fk.tableName + "." + fk.constraintName);
+			alterStmt.execute();
 		}
 	}
 
@@ -212,7 +243,7 @@ public class AutoFKIndexDB {
 		return rs.next();
 	}
 
-	private void deleteForeignKeyIndices(Connection conn) throws SQLException {
+	private void dropForeignKeyIndices(Connection conn) throws SQLException {
 		List<String> indices = new ArrayList<String>();
 
 		PreparedStatement selectStmt = conn.prepareStatement(indexQuery);
@@ -222,9 +253,9 @@ public class AutoFKIndexDB {
 		}
 
 		for (String indexName : indices) {
-			PreparedStatement deleteStmt = conn.prepareStatement("DROP INDEX " + indexName);
-			System.out.println("Deleting index " + indexName);
-			deleteStmt.execute();
+			PreparedStatement dropStmt = conn.prepareStatement("DROP INDEX " + indexName);
+			System.out.println("Dropping index " + indexName);
+			dropStmt.execute();
 		}
 	}
 

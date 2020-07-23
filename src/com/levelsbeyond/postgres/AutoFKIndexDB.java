@@ -33,310 +33,304 @@ import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Properties;
-
 import org.apache.commons.lang3.BooleanUtils;
 import org.apache.commons.lang3.tuple.ImmutablePair;
 import org.apache.commons.lang3.tuple.Pair;
 import org.jdom.output.Format;
 import org.jdom.output.XMLOutputter;
+import org.postgresql.util.PSQLException;
 
 public class AutoFKIndexDB {
-	@SuppressWarnings("unused")
-	private static final XMLOutputter xmlOut = new XMLOutputter(Format.getPrettyFormat());
 
-	private static String constraintQuery =
-			"SELECT tc.table_name, kcu.column_name, tc.constraint_name " +
-					"FROM information_schema.table_constraints tc " +
-					"LEFT JOIN information_schema.key_column_usage kcu " +
-					"ON tc.constraint_catalog = kcu.constraint_catalog " +
-					"AND tc.constraint_schema = kcu.constraint_schema " +
-					"AND tc.constraint_name = kcu.constraint_name " +
-					"WHERE lower(tc.constraint_type) = 'foreign key'";
+    private static final XMLOutputter xmlOut = new XMLOutputter(Format.getPrettyFormat());
 
-	private static final String tuplesQuery = "SELECT reltuples::bigint FROM pg_constraint JOIN pg_class ON (conrelid = pg_class.oid) WHERE contype = 'f' AND conname = ?";
+    private static String constraintQuery =
+        "SELECT tc.table_name, kcu.column_name, tc.constraint_name " +
+            "FROM information_schema.table_constraints tc " +
+            "LEFT JOIN information_schema.key_column_usage kcu " +
+            "ON tc.constraint_catalog = kcu.constraint_catalog " +
+            "AND tc.constraint_schema = kcu.constraint_schema " +
+            "AND tc.constraint_name = kcu.constraint_name " +
+            "WHERE lower(tc.constraint_type) = 'foreign key'";
 
-	private static final String hasIndexQuery = "SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relname = ? AND n.nspname = 'public'";
+    private static final String tuplesQuery = "SELECT reltuples::bigint FROM pg_constraint JOIN pg_class ON (conrelid = pg_class.oid) WHERE contype = 'f' AND conname = ?";
 
-	private static final String createIndex = "CREATE INDEX %s ON public.%s (%s)";
+    private static final String hasIndexQuery = "SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relname = ? AND n.nspname = 'public'";
 
-	private static final String indexQuery = "SELECT indexname FROM pg_indexes WHERE schemaname = 'public' AND indexdef like 'CREATE INDEX%'";
+    private static final String createIndex = "CREATE INDEX %s ON public.%s (%s)";
 
-	private static final Map<String, Pair<String, String>> indexMap = new HashMap<String, Pair<String, String>>();
+    private static final String indexQuery = "SELECT indexname FROM pg_indexes WHERE schemaname = 'public' AND indexdef like 'CREATE INDEX%'";
 
-	public static void main(String[] args) throws SQLException, IOException {
-		String host = "localhost";
-		String database = null;
-		String user = null;
-		String password = null;
-		int minTuples = 1000;
-		Boolean dropIndices = null;
-		Boolean dropConstraints = null;
-		Boolean createIndices = null;
-		boolean showHelp = false;
+    private static final Map<String, Pair<String, String>> indexMap = new HashMap<>();
 
-		for (String arg : args) {
-			if (arg.startsWith("--host=")) {
-				host = arg.substring(7);
-			}
-			else if (arg.startsWith("--database=")) {
-				database = arg.substring(11);
-			}
-			else if (arg.startsWith("--user=")) {
-				user = arg.substring(7);
-			}
-			else if (arg.startsWith("--password=")) {
-				password = arg.substring(11);
-			}
-			else if (arg.startsWith("--min-tuples=")) {
-				minTuples = Integer.valueOf(arg.substring(13));
-			}
-			else if (arg.startsWith("--drop-indices=")) {
-				dropIndices = BooleanUtils.toBooleanObject(arg.substring(15));
-			}
-			else if (arg.startsWith("--drop-constraints=")) {
-				dropConstraints = BooleanUtils.toBooleanObject(arg.substring(19));
-			}
-			else if (arg.startsWith("--create-indices=")) {
-				createIndices = BooleanUtils.toBooleanObject(arg.substring(17));
-			}
-			else if (arg.startsWith("--help")) {
-				showHelp = true;
-			}
-		}
+    public static void main(String[] args) throws SQLException, IOException {
+        String host = "localhost";
+        String database = null;
+        String user = null;
+        String password = null;
+        int minTuples = 0;
+        Boolean dropIndices = null;
+        Boolean dropConstraints = null;
+        Boolean createIndices = null;
+        boolean showHelp = false;
 
-		Properties props = new Properties();
-		props.load(ClassLoader.getSystemResourceAsStream("default.index.properties"));
-		try {
-			props.load(new FileInputStream(getJarPath() + File.separator + "index.properties"));
-		}
-		catch (Exception e) {
-			System.err.println("Couldn't locate index.properties -- ignoring.");
-		}
-		for (Entry<Object, Object> prop : props.entrySet()) {
-			String indexName = prop.getKey().toString();
-			String[] tableAndColumn = prop.getValue().toString().split("\\.");
-			if (tableAndColumn.length == 2) {
-				indexMap.put(indexName, new ImmutablePair<String, String>(tableAndColumn[0], tableAndColumn[1]));
-			}
-		}
+        for (String arg : args) {
+            if (arg.startsWith("--host=")) {
+                host = arg.substring(7);
+            } else if (arg.startsWith("--database=")) {
+                database = arg.substring(11);
+            } else if (arg.startsWith("--user=")) {
+                user = arg.substring(7);
+            } else if (arg.startsWith("--password=")) {
+                password = arg.substring(11);
+            } else if (arg.startsWith("--min-tuples=")) {
+                minTuples = Integer.valueOf(arg.substring(13));
+            } else if (arg.startsWith("--drop-indices=")) {
+                dropIndices = BooleanUtils.toBooleanObject(arg.substring(15));
+            } else if (arg.startsWith("--drop-constraints=")) {
+                dropConstraints = BooleanUtils.toBooleanObject(arg.substring(19));
+            } else if (arg.startsWith("--create-indices=")) {
+                createIndices = BooleanUtils.toBooleanObject(arg.substring(17));
+            } else if (arg.startsWith("--help")) {
+                showHelp = true;
+            }
+        }
 
-		if (showHelp || database == null || user == null || password == null || (dropIndices == null && dropConstraints == null && createIndices == null)) {
-			System.out.println("Usage: java -jar AutoFKIndexDB.jar\nOptions:\n" +
-					"\t--host=[" + host + "]\n" +
-					"\t--database=[" + database + "]\n" +
-					"\t--user=[" + user + "]\n" +
-					"\t--password=[" + password + "]\n" +
-					"\t--min-tuples=[" + minTuples + "]\n" +
-					"\t--drop-indices=" + (dropIndices != null ? "[" + dropIndices + "]" : "true|false") + "\n" +
-					"\t--drop-constraints=" + (dropConstraints != null ? "[" + dropConstraints + "]" : "true|false") + "\n" +
-					"\t--create-indices=" + (createIndices != null ? "[" + createIndices + "]" : "true|false") + "\n" +
-					"\t--help");
-			System.exit(1);
-		}
+        Properties props = new Properties();
+        props.load(ClassLoader.getSystemResourceAsStream("default.index.properties"));
+        try {
+            props.load(new FileInputStream(getJarPath() + File.separator + "index.properties"));
+        } catch (Exception e) {
+            System.err.println("Couldn't locate index.properties -- ignoring.");
+        }
+        for (Entry<Object, Object> prop : props.entrySet()) {
+            String indexName = prop.getKey().toString();
+            String[] tableAndColumn = prop.getValue().toString().split("\\.");
+            if (tableAndColumn.length == 2) {
+                indexMap.put(indexName, new ImmutablePair<>(tableAndColumn[0], tableAndColumn[1]));
+            }
+        }
 
-		Connection conn = null;
-		try {
-			String url = "jdbc:postgresql://" + host + ":5432/" + database;
-			conn = DriverManager.getConnection(url, user, password);
+        if (showHelp || database == null || user == null || password == null || (dropIndices == null && dropConstraints == null && createIndices == null)) {
+            System.out.println("Usage: java -jar AutoFKIndexDB.jar\nOptions:\n" +
+                                   "\t--host=[" + host + "]\n" +
+                                   "\t--database=[" + database + "]\n" +
+                                   "\t--user=[" + user + "]\n" +
+                                   "\t--password=[" + password + "]\n" +
+                                   "\t--min-tuples=[" + minTuples + "]\n" +
+                                   "\t--drop-indices=" + (dropIndices != null ? "[" + dropIndices + "]" : "true|false") + "\n" +
+                                   "\t--drop-constraints=" + (dropConstraints != null ? "[" + dropConstraints + "]" : "true|false") + "\n" +
+                                   "\t--create-indices=" + (createIndices != null ? "[" + createIndices + "]" : "true|false") + "\n" +
+                                   "\t--help");
+            System.exit(1);
+        }
 
-			AutoFKIndexDB autoFK = new AutoFKIndexDB();
+        Connection conn = null;
+        try {
+            String url = "jdbc:postgresql://" + host + ":5432/" + database;
+            conn = DriverManager.getConnection(url, user, password);
 
-			if (BooleanUtils.isTrue(dropIndices)) {
-				autoFK.dropForeignKeyIndices(conn);
-			}
+            AutoFKIndexDB autoFK = new AutoFKIndexDB();
 
-			if (BooleanUtils.isTrue(dropConstraints)) {
-				autoFK.dropForeignKeyConstraints(conn);
-			}
+            if (BooleanUtils.isTrue(dropIndices)) {
+                autoFK.dropForeignKeyIndices(conn);
+            }
 
-			if (BooleanUtils.isTrue(createIndices)) {
-				autoFK.createForeignKeyIndices(conn, minTuples);
-			}
-		}
-		catch (Exception e) {
-			System.err.println("Got an exception: " + e.getMessage());
-			e.printStackTrace();
-		}
-		finally {
-			if (conn != null) {
-				conn.close();
-			}
-		}
-	}
+            if (BooleanUtils.isTrue(dropConstraints)) {
+                autoFK.dropForeignKeyConstraints(conn);
+            }
 
-	private static String jarPath;
+            if (BooleanUtils.isTrue(createIndices)) {
+                autoFK.createForeignKeyIndices(conn, minTuples);
+            }
+        } catch (Exception e) {
+            System.err.println("Got an exception: " + e.getMessage());
+            e.printStackTrace();
+        } finally {
+            if (conn != null) {
+                conn.close();
+            }
+        }
+    }
 
-	private static String getJarPath() {
-		if (jarPath == null) {
-			try {
-				File jarFile = new File(AutoFKIndexDB.class.getProtectionDomain().getCodeSource().getLocation().toURI());
-				jarPath = jarFile.getParentFile().getAbsolutePath();
-			}
-			catch (URISyntaxException e) {
-				e.printStackTrace();
-			}
-		}
-		return jarPath;
-	}
+    private static String jarPath;
 
-	private void createForeignKeyIndices(Connection conn, int minTuples) throws SQLException {
-		List<ForeignKeyConstraint> fkConstraints = new ArrayList<ForeignKeyConstraint>();
-		PreparedStatement selectStmt = conn.prepareStatement(constraintQuery);
-		ResultSet rs = selectStmt.executeQuery();
-		while (rs.next()) {
-			String tableName = rs.getString(1);
-			String columnName = rs.getString(2);
-			String constraintName = rs.getString(3);
-			fkConstraints.add(new ForeignKeyConstraint(tableName, columnName, constraintName));
-		}
+    private static String getJarPath() {
+        if (jarPath == null) {
+            try {
+                File jarFile = new File(AutoFKIndexDB.class.getProtectionDomain().getCodeSource().getLocation().toURI());
+                jarPath = jarFile.getParentFile().getAbsolutePath();
+            } catch (URISyntaxException e) {
+                e.printStackTrace();
+            }
+        }
+        return jarPath;
+    }
 
-		for (ForeignKeyConstraint fk : fkConstraints) {
-			selectStmt = conn.prepareStatement(tuplesQuery);
-			selectStmt.setString(1, fk.getConstraintName());
-			rs = selectStmt.executeQuery();
-			if (rs.next()) {
-				fk.setTuples(rs.getLong(1));
-			}
-		}
+    private void createForeignKeyIndices(Connection conn, int minTuples) throws SQLException {
+        List<ForeignKeyConstraint> fkConstraints = new ArrayList<>();
+        PreparedStatement selectStmt = conn.prepareStatement(constraintQuery);
+        ResultSet rs = selectStmt.executeQuery();
+        while (rs.next()) {
+            String tableName = rs.getString(1);
+            String columnName = rs.getString(2);
+            String constraintName = rs.getString(3);
+            if (!constraintName.contains("-")) {
+                fkConstraints.add(new ForeignKeyConstraint(tableName, columnName, constraintName));
+            }
+        }
 
-		Collections.sort(fkConstraints);
+        for (ForeignKeyConstraint fk : fkConstraints) {
+            selectStmt = conn.prepareStatement(tuplesQuery);
+            selectStmt.setString(1, fk.getConstraintName());
+            rs = selectStmt.executeQuery();
+            if (rs.next()) {
+                fk.setTuples(rs.getLong(1));
+            }
+        }
 
-		for (ForeignKeyConstraint fk : fkConstraints) {
-			String indexName = "fki_" + fk.getConstraintName();
-			if (indexName.lastIndexOf("_fkey") > 0) {
-				indexName = indexName.substring(0, indexName.lastIndexOf("_fkey"));
-			}
-			if (fk.getTuples() >= minTuples && !hasIndex(conn, indexName)) {
-				System.out.printf("Creating index %s (tuples: %d)\n", (fk.getTableName() + "." + fk.getColumnName() + " --> " + indexName), fk.getTuples());
+        Collections.sort(fkConstraints);
 
-				PreparedStatement createStmt = conn.prepareStatement(String.format(createIndex, indexName, fk.getTableName(), fk.getColumnName()));
-				createStmt.execute();
-			}
-		}
+        for (ForeignKeyConstraint fk : fkConstraints) {
+            String indexName = "fki_" + fk.getConstraintName();
+            if (indexName.lastIndexOf("_fkey") > 0) {
+                indexName = indexName.substring(0, indexName.lastIndexOf("_fkey"));
+            }
+            if (fk.getTuples() >= minTuples && !hasIndex(conn, indexName)) {
+                System.out.printf("Creating index %s (tuples: %d)\n", (fk.getTableName() + "." + fk.getColumnName() + " --> " + indexName), fk.getTuples());
+                try {
+                    PreparedStatement createStmt = conn.prepareStatement(String.format(createIndex, indexName, fk.getTableName(), fk.getColumnName()));
+                    createStmt.execute();
+                } catch (PSQLException e) {
+                    System.out.println(e.getMessage());
+                    System.out.println(String.format(createIndex, indexName, fk.getTableName(), fk.getColumnName()));
+                }
+            }
+        }
 
-		for (Entry<String, Pair<String, String>> entry : indexMap.entrySet()) {
-			String indexName = entry.getKey();
-			String tableName = entry.getValue().getLeft();
-			String columnName = entry.getValue().getRight();
+        for (Entry<String, Pair<String, String>> entry : indexMap.entrySet()) {
+            String indexName = entry.getKey();
+            String tableName = entry.getValue().getLeft();
+            String columnName = entry.getValue().getRight();
 
-			if (!hasIndex(conn, indexName)) {
-				System.out.printf("Creating index %s\n", (tableName + "." + columnName + " --> " + indexName));
+            if (!hasIndex(conn, indexName)) {
+                System.out.printf("Creating index %s\n", (tableName + "." + columnName + " --> " + indexName));
 
-				try {
-					PreparedStatement createStmt = conn.prepareStatement(String.format(createIndex, indexName, tableName, columnName));
-					createStmt.execute();
-				}
-				catch (SQLException e) {
-					System.err.println("Failed to create index " + indexName + ": " + e.getMessage());
-				}
-			}
-		}
-	}
+                try {
+                    PreparedStatement createStmt = conn.prepareStatement(String.format(createIndex, indexName, tableName, columnName));
+                    createStmt.execute();
+                } catch (SQLException e) {
+                    System.err.println("Failed to create index " + indexName + ": " + e.getMessage());
+                }
+            }
+        }
+    }
 
-	private void dropForeignKeyConstraints(Connection conn) throws SQLException {
-		List<ForeignKeyConstraint> fkConstraints = new ArrayList<ForeignKeyConstraint>();
-		PreparedStatement selectStmt = conn.prepareStatement(constraintQuery);
-		ResultSet rs = selectStmt.executeQuery();
-		while (rs.next()) {
-			String tableName = rs.getString(1);
-			String columnName = rs.getString(2);
-			String constraintName = rs.getString(3);
-			fkConstraints.add(new ForeignKeyConstraint(tableName, columnName, constraintName));
-		}
+    private void dropForeignKeyConstraints(Connection conn) throws SQLException {
+        List<ForeignKeyConstraint> fkConstraints = new ArrayList<>();
+        PreparedStatement selectStmt = conn.prepareStatement(constraintQuery);
+        ResultSet rs = selectStmt.executeQuery();
+        while (rs.next()) {
+            String tableName = rs.getString(1);
+            String columnName = rs.getString(2);
+            String constraintName = rs.getString(3);
+            fkConstraints.add(new ForeignKeyConstraint(tableName, columnName, constraintName));
+        }
 
-		Collections.sort(fkConstraints);
+        Collections.sort(fkConstraints);
 
-		for (ForeignKeyConstraint fk : fkConstraints) {
-			PreparedStatement alterStmt = conn.prepareStatement("ALTER TABLE " + fk.tableName + " DROP CONSTRAINT " + fk.constraintName);
-			System.out.println("Dropping constraint " + fk.tableName + "." + fk.constraintName);
-			alterStmt.execute();
-		}
-	}
+        for (ForeignKeyConstraint fk : fkConstraints) {
+            PreparedStatement alterStmt = conn.prepareStatement("ALTER TABLE " + fk.tableName + " DROP CONSTRAINT " + fk.constraintName);
+            System.out.println("Dropping constraint " + fk.tableName + "." + fk.constraintName);
+            alterStmt.execute();
+        }
+    }
 
-	private boolean hasIndex(Connection conn, String name) throws SQLException {
-		PreparedStatement selectStmt = conn.prepareStatement(hasIndexQuery);
-		selectStmt.setString(1, name);
-		ResultSet rs = selectStmt.executeQuery();
-		return rs.next();
-	}
+    private boolean hasIndex(Connection conn, String name) throws SQLException {
+        PreparedStatement selectStmt = conn.prepareStatement(hasIndexQuery);
+        selectStmt.setString(1, name);
+        ResultSet rs = selectStmt.executeQuery();
+        return rs.next();
+    }
 
-	private void dropForeignKeyIndices(Connection conn) throws SQLException {
-		List<String> indices = new ArrayList<String>();
+    private void dropForeignKeyIndices(Connection conn) throws SQLException {
+        List<String> indices = new ArrayList<>();
 
-		PreparedStatement selectStmt = conn.prepareStatement(indexQuery);
-		ResultSet rs = selectStmt.executeQuery();
-		while (rs.next()) {
-			indices.add(rs.getString(1));
-		}
+        PreparedStatement selectStmt = conn.prepareStatement(indexQuery);
+        ResultSet rs = selectStmt.executeQuery();
+        while (rs.next()) {
+            indices.add(rs.getString(1));
+        }
 
-		for (String indexName : indices) {
-			PreparedStatement dropStmt = conn.prepareStatement("DROP INDEX " + indexName);
-			System.out.println("Dropping index " + indexName);
-			dropStmt.execute();
-		}
-	}
+        for (String indexName : indices) {
+            PreparedStatement dropStmt = conn.prepareStatement("DROP INDEX " + indexName);
+            System.out.println("Dropping index " + indexName);
+            dropStmt.execute();
+        }
+    }
 
-	public class ForeignKeyConstraint implements Comparable<ForeignKeyConstraint> {
-		private String tableName;
-		private String columnName;
-		private String constraintName;
-		private Long tuples;
+    public class ForeignKeyConstraint implements Comparable<ForeignKeyConstraint> {
 
-		public ForeignKeyConstraint(String tableName, String columnName, String constraintName) {
-			super();
-			this.tableName = tableName;
-			this.columnName = columnName;
-			this.constraintName = constraintName;
-		}
+        private String tableName;
+        private String columnName;
+        private String constraintName;
+        private Long tuples;
 
-		public String getTableName() {
-			return tableName;
-		}
+        public ForeignKeyConstraint(String tableName, String columnName, String constraintName) {
+            super();
+            this.tableName = tableName;
+            this.columnName = columnName;
+            this.constraintName = constraintName;
+        }
 
-		public void setTableName(String tableName) {
-			this.tableName = tableName;
-		}
+        public String getTableName() {
+            return tableName;
+        }
 
-		public String getColumnName() {
-			return columnName;
-		}
+        public void setTableName(String tableName) {
+            this.tableName = tableName;
+        }
 
-		public void setColumnName(String columnName) {
-			this.columnName = columnName;
-		}
+        public String getColumnName() {
+            return columnName;
+        }
 
-		public String getConstraintName() {
-			return constraintName;
-		}
+        public void setColumnName(String columnName) {
+            this.columnName = columnName;
+        }
 
-		public void setConstraintName(String constraintName) {
-			this.constraintName = constraintName;
-		}
+        public String getConstraintName() {
+            return constraintName;
+        }
 
-		public Long getTuples() {
-			return tuples;
-		}
+        public void setConstraintName(String constraintName) {
+            this.constraintName = constraintName;
+        }
 
-		public void setTuples(Long tuples) {
-			this.tuples = tuples;
-		}
+        public Long getTuples() {
+            return tuples;
+        }
 
-		@Override
-		public int compareTo(ForeignKeyConstraint that) {
-			int result = 0;
-			if (this.tuples != null && that.tuples != null) {
-				result = that.tuples.compareTo(this.tuples);
-			}
-			if (result == 0) {
-				result = this.tableName.compareTo(that.tableName);
-			}
-			if (result == 0) {
-				result = this.columnName.compareTo(that.columnName);
-			}
-			if (result == 0) {
-				result = this.constraintName.compareTo(that.constraintName);
-			}
-			return result;
-		}
-	}
+        public void setTuples(Long tuples) {
+            this.tuples = tuples;
+        }
+
+        @Override
+        public int compareTo(ForeignKeyConstraint that) {
+            int result = 0;
+            if (this.tuples != null && that.tuples != null) {
+                result = that.tuples.compareTo(this.tuples);
+            }
+            if (result == 0) {
+                result = this.tableName.compareTo(that.tableName);
+            }
+            if (result == 0) {
+                result = this.columnName.compareTo(that.columnName);
+            }
+            if (result == 0) {
+                result = this.constraintName.compareTo(that.constraintName);
+            }
+            return result;
+        }
+    }
 }
